@@ -9,6 +9,15 @@ This release contains the Arosa source snapshot at `676d4f02d4e04c556a81e275b59a
 - Explicit web administrator configuration and synthetic replacement of the production-derived report fixture.
 - Startup requirements, provider migration checklist and architectural demo guide.
 
+## Demonstration attribution
+
+- **Pre-existing foundation:** zoning tools, Underwriting, floor-plan editor, IFC/Pascal exchange and the scripted Blender/Bonsai worker. Do not present these as newly authored during the event.
+- **New Meta integration:** independent Modeling research with Muse Spark (`acres-research/meta.mjs`, `service.mjs`, and `research.mjs`), and selection-guided SAM/Muse Image workflows (`meta-visual.mjs` and the photo UI).
+- **New architectural presentation:** plan-aware interior illustration, improved walkthrough materials/lighting and licensed architectural assets, followed by black-frame recovery, interaction, timing and phone performance changes in `app-starter/frontend/` and `app-starter/public/architecture-assets/`.
+- **New full-source release:** the publication, independent general/Underwriting Meta routing, removal of implicit public administrators, and documentation identified above.
+
+The video should demonstrate the new agent using the existing architectural tools, and the new walkthrough behavior. Verify a real Meta run before recording any narrated agent action. A file appearing in the table below does not make all of its older behavior eligible as new work.
+
 ## Event-window product work
 
 The table below is generated from the baseline-to-snapshot Git diff. Added and modified describe source history, not a claim that every feature in a modified file was new. Pascal and Blender existed before the event; the demo must highlight event-window changes to their workflow.
