@@ -1,3 +1,5 @@
+// Explicit operator configuration for this isolated test deployment.
+process.env.AROSA_ADMIN_EMAILS='michael@witharosa.ai,alex@witharosa.ai,chaim@witharosa.ai';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {join} from 'node:path';
