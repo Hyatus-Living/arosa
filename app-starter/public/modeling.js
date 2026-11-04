@@ -148,7 +148,7 @@ export function createModeling({ root, navigate, canStart, suggest = fetchAddres
         submit.disabled = true; noParcel.disabled = true; status.textContent = 'Creating model…';
         try {
           const model = await postChat('/projects', { workflow: 'modeling', address: choice ? choice.label : address.value.trim(), bbl: choice?.bbl || null, title: name.value.trim() || (choice ? choice.label : address.value.trim()) });
-          if (visit === generation) navigate(routePath({ view: 'plan', projectId: model.id }));
+          if (visit === generation) navigate(`${routePath({ view: 'plan', projectId: model.id })}?view=massing`);
         } catch (error) {
           if (visit === generation) { status.replaceChildren(failLine(error.message)); submit.disabled = !verified; noParcel.disabled = false; }
         }

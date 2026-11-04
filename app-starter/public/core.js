@@ -23,6 +23,13 @@ function el(tag, className, text) {
   return node;
 }
 
+const HOUSING_GOALS = [
+  {id: 'capacity', label: 'Explore the site’s housing potential', request: 'Create a preliminary 3D building shape that makes the most of the available capacity.'},
+  {id: 'another-home', label: 'Make room for one more home', request: 'Explore whether an accessory dwelling or another small home could fit while keeping the existing building. Check the applicable dwelling, access and setback rules before proposing a location; do not assume an ADU is allowed.'},
+  {id: 'addition', label: 'Add space to an existing home', request: 'Explore an addition to the existing home. Establish what is known about the existing footprint and height, then identify where additional space might fit. Do not assume the existing structure can support an extra storey.'},
+  {id: 'infill', label: 'Explore a small infill housing project', request: 'Explore a small housing project suited to this site, with practical access and open space. Compare a modest housing option with the allowed capacity rather than assuming the largest building is the best fit.'},
+];
+
 // The chat beside a site is the app's docked chat; setChatOpen opens or closes it (app.js).
 export function createCorePage({ root, navigate, underwrite, pendingBox, conversationId, canSend, mountConcept, mountArchitecture, mountPlan, architectureEnabled, setChatOpen = () => {}, onSiteTitle = () => {} }) {
   const api = { get: (path) => chatRequest(path), patch: (path, body) => patchChat(path, body), post: (path, body) => postChat(path, body) };
@@ -36,6 +43,8 @@ export function createCorePage({ root, navigate, underwrite, pendingBox, convers
   let refreshing = null;
   let refreshAgain = false;
   let selectedConceptId = null;
+  let housingGoal = 'capacity';
+  let housingNotes = '';
   let assumptionStatus = "";
   const viewers = new Map();
   // Architecture section: null when the session does not enable it, else {status, summary, view, starting, runError}.
@@ -919,20 +928,36 @@ export function createCorePage({ root, navigate, underwrite, pendingBox, convers
     if(model){panel.replaceChildren(model);return;}
     const empty=el('div','modeling-empty');
     const address=current.fields.property?.value?.address?.trim();
-    empty.append(el('h2','','Build a model'));
+    empty.append(el('h2','','What could you build here?'));
     empty.append(el('p','core-note',address
       ? 'Use the address to explore a zoning-based building shape. The result is a starting estimate that needs review.'
       : 'Describe the building’s dimensions and the shape you want to explore.'));
     const actions=el('div','modeling-empty-actions');
     if(address) {
+      const label=el('label','modeling-goal','What would you like to explore?');
+      const goal=el('select');goal.name='housing-goal';goal.disabled=!canSend()||current.access==='viewer';
+      for(const item of HOUSING_GOALS) {
+        const option=el('option','',item.label);option.value=item.id;option.selected=item.id===housingGoal;goal.append(option);
+      }
+      goal.addEventListener('change',()=>{housingGoal=goal.value;});
+      label.append(goal);
+      const notesLabel=el('label','modeling-goal','Anything to keep or include? (optional)');
+      const notes=el('textarea');notes.name='housing-notes';notes.rows=2;notes.maxLength=600;notes.value=housingNotes;
+      notes.placeholder='For example: keep the existing home and make space for a parent.';
+      notes.disabled=!canSend()||current.access==='viewer';
+      notes.addEventListener('input',()=>{housingNotes=notes.value;});notesLabel.append(notes);
+      empty.append(label,notesLabel);
       if(pending?.action==='zoning-concept') {
-        const status=el('p','core-note','Researching the site and building a concept…');status.setAttribute('role','status');actions.append(status);
+        goal.disabled=true;notes.disabled=true;
+        const status=el('p','core-note','Researching the site and your housing idea…');status.setAttribute('role','status');actions.append(status);
       } else {
         const build=el('button','core-follow primary','Explore zoning potential');build.type='button';build.dataset.zoningConcept='';build.disabled=!canSend()||current.access==='viewer';
         build.addEventListener('click',()=>{
-          if(!canSend()||current.access==='viewer')return;
+          if(!canSend()||current.access==='viewer'||pending?.action==='zoning-concept')return;
+          const selected=HOUSING_GOALS.find(item=>item.id===housingGoal);
+          const preferences=housingNotes.trim();
           markPending('concepts','zoning-concept');setChatCollapsed(false,{remember:false});
-          document.dispatchEvent(new CustomEvent('acres-follow-up',{detail:{text:`Explore the as-of-right zoning potential at ${JSON.stringify(address)}. Use reliable parcel and zoning information to create a preliminary 3D building shape that makes the most of the available capacity. Cite the sources and assumptions, and explain any missing information. If the parcel or zoning is uncertain, tell me what is missing instead of guessing. Keep my existing floor plan and skip financial analysis.`}}));
+          document.dispatchEvent(new CustomEvent('acres-follow-up',{detail:{text:`Explore the as-of-right zoning potential at ${JSON.stringify(address)}. ${selected.request} Use reliable parcel and zoning information. ${preferences?`My preferences: ${JSON.stringify(preferences)}. `:''}Cite the sources and assumptions, and explain any missing information. Distinguish what the records support from what needs a survey, professional review or approval. If the parcel or zoning is uncertain, tell me what is missing instead of guessing. Create a preliminary 3D building shape only when the site geometry and rules support it. Keep my existing floor plan and skip financial analysis.`}}));
         });
         actions.append(build);
       }
@@ -995,6 +1020,8 @@ export function createCorePage({ root, navigate, underwrite, pendingBox, convers
     planScheme = DEFAULT_SCHEME;
     news = null;
     selectedConceptId = null;
+    housingGoal = 'capacity';
+    housingNotes = '';
     assumptionStatus = "";
   }
 
