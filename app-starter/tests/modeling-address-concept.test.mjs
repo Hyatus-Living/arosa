@@ -77,3 +77,44 @@ test('read-only access and older models without an address do not start zoning r
   assert.equal(root.querySelector('[data-zoning-concept]'),null);
   assert.match(root.querySelector('.modeling-empty').textContent,/Describe a building/);
 });
+
+test('housing goals and preferences reach only the Modeling request and survive a failed run',async t=>{
+  const {page}=await openModel({address:'28 Example Avenue, Portland'});
+  t.after(()=>page.leave());
+  const events=[];const listener=e=>events.push(e.detail);
+  document.addEventListener('acres-follow-up',listener);
+  t.after(()=>document.removeEventListener('acres-follow-up',listener));
+  const select=root.querySelector('[name="housing-goal"]');
+  for(const option of select.querySelectorAll('option'))option.removeAttribute('selected');
+  select.querySelector('[value="another-home"]').setAttribute('selected','');
+  select.dispatchEvent(new window.Event('change'));
+  const notes=root.querySelector('[name="housing-notes"]');
+  notes.value='Keep the garden and make space for a parent.';
+  notes.dispatchEvent(new window.Event('input'));
+  const start=root.querySelector('[data-zoning-concept]');start.click();start.click();
+  assert.equal(events.length,1,'a starting request cannot be duplicated by its old button');
+  assert.match(events[0].text,/28 Example Avenue, Portland/);
+  assert.match(events[0].text,/accessory dwelling.*keeping the existing building/);
+  assert.match(events[0].text,/do not assume an ADU is allowed/);
+  assert.match(events[0].text,/Keep the garden and make space for a parent/);
+  assert.match(events[0].text,/survey, professional review or approval/);
+  assert.match(events[0].text,/Keep my existing floor plan and skip financial analysis/);
+  assert.equal(root.querySelector('[name="housing-goal"]').disabled,true);
+  page.setRun({label:'Researching'});page.setRun(null,'Research failed');
+  assert.equal(root.querySelector('[name="housing-goal"]').value,'another-home');
+  assert.equal(root.querySelector('[name="housing-notes"]').value,notes.value);
+  assert.equal(root.querySelector('[name="housing-goal"]').disabled,false);
+});
+
+test('a different project starts with its own housing goal and permission state',async t=>{
+  const first=await openModel();
+  const notes=root.querySelector('[name="housing-notes"]');notes.value='Private first project goal';
+  notes.dispatchEvent(new window.Event('input'));
+  first.page.leave();
+  const second=await openModel({address:'9 Example Road, Austin',access:'viewer'});
+  t.after(()=>second.page.leave());
+  assert.equal(root.querySelector('[name="housing-goal"]').value,'capacity');
+  assert.equal(root.querySelector('[name="housing-notes"]').value,'');
+  assert.equal(root.querySelector('[name="housing-goal"]').disabled,true);
+  assert.equal(root.querySelector('[name="housing-notes"]').disabled,true);
+});

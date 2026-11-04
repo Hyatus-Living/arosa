@@ -20,7 +20,7 @@ import {CrmEnrichment} from './crm-enrichment.mjs';
 import {BetaTesters} from './beta.mjs';
 import {Feedback} from './feedback.mjs';
 import {runCodex} from './codex.mjs';
-import {runMeta} from './meta.mjs';
+import {runMeta,resolveMetaModel} from './meta.mjs';
 import {segmentHousingPhoto,illustrateHousing} from './meta-visual.mjs';
 import {EvidenceStore} from './mcp-store.mjs';
 import {createMcpDomain,createExaSearch} from './mcp-domain.mjs';
@@ -56,7 +56,10 @@ export function researchEngine(secrets,runner=research) {
   const engines={research:secrets.RESEARCH_ENGINE??'codex',modeling:secrets.MODELING_RESEARCH_ENGINE??secrets.RESEARCH_ENGINE??'codex',underwriting:secrets.UNDERWRITING_RESEARCH_ENGINE??secrets.RESEARCH_ENGINE??'codex'};
   for(const [workflow,engine] of Object.entries(engines)) {
     if(!['codex','meta'].includes(engine))throw new Error(`${workflow} research engine must be codex or meta, not ${engine}.`);
-    if(engine==='meta'&&!secrets.MODEL_API_KEY)throw new Error('The Meta research engine needs MODEL_API_KEY.');
+    if(engine==='meta') {
+      if(!secrets.MODEL_API_KEY)throw new Error('The Meta research engine needs MODEL_API_KEY.');
+      resolveMetaModel(secrets.META_MODEL);
+    }
   }
   return (input,runSecrets,progress,emit,onControl)=>{
     const workflow=['modeling','underwriting'].includes(input.workflow)?input.workflow:'research';

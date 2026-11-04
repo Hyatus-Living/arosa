@@ -11,19 +11,39 @@ import {selectEffort,toolError,followUpTurns,followUpLimits,sanitizeAnswerFormat
 // and never falls back to another model.
 const API='https://api.meta.ai/v1';
 export const META_MODEL='muse-spark-1.3';
+export const META_API_MODELS=new Set(['muse-spark-1.1','muse-spark-1.2','muse-spark-1.2-contributor','muse-spark-1.3','muse-spark-1.3-contributor','muse-wonder-1.0']);
+
+export function resolveMetaModel(value=META_MODEL) {
+  const model=value||META_MODEL;
+  if(META_API_MODELS.has(model))return model;
+  if(/^muse-wonder-full(?:[.-]|$)/.test(model))throw new Error('META_MODEL Muse Wonder Full is available only with an eligible Muse Code subscription, not through the Meta Model API. Use muse-wonder-1.0 or a Muse Spark API model.');
+  throw new Error(`META_MODEL ${JSON.stringify(model)} is not supported by the Meta Model API. Use muse-wonder-1.0, muse-spark-1.1, muse-spark-1.2, muse-spark-1.2-contributor, muse-spark-1.3, or muse-spark-1.3-contributor.`);
+}
+
+function providerError(status) {
+  if(status===401||status===403)return new Error('The Meta Model API could not authenticate this request. Check MODEL_API_KEY and its API access.');
+  if(status===400)return new Error('The Meta Model API rejected this request. Check the request configuration.');
+  if(status===404)return new Error('The Meta Model API could not serve the configured model. Confirm META_MODEL is available to this API key.');
+  if(status===429)return new Error('The Meta Model API rate limit was reached. Try again shortly.');
+  if(status>=500)return new Error('The Meta Model API is temporarily unavailable. Try again shortly.');
+  return new Error(`The Meta Model API request failed with HTTP ${status}.`);
+}
+
+const streamError=()=>new Error('The Meta Model API stream failed. Try again shortly.');
 
 export async function runMeta(options) {
+  const model=resolveMetaModel(options.secrets?.META_MODEL);
   const controller=new AbortController();
   const signal=combinedSignal(executionSignal(),options.signal,controller.signal);
   const usageStreamId=options.usageStreamId??randomUUID(),emit=options.emit??(()=>{});
   let lastUsage,outcome='failed';
-  emit('billing.agent.started',{usageStreamId,label:options.label??'research'});
+  emit('billing.agent.started',{provider:'meta',usageStreamId,label:options.label??'research',model});
   try{
-    const result=await withExecutionSignal(signal,()=>runMetaTurns({...options,usageStreamId,controller,signal,onUsage:usage=>{lastUsage=usage;options.onUsage?.(usage);}}));
+    const result=await withExecutionSignal(signal,()=>runMetaTurns({...options,model,usageStreamId,controller,signal,onUsage:usage=>{lastUsage=usage;options.onUsage?.(usage);}}));
     outcome='completed';return result;
   }finally{
-    if(lastUsage)emit('billing.usage',{provider:'meta',usageStreamId,usageSemantics:'cumulative',usage:lastUsage});
-    emit('billing.agent.completed',{usageStreamId,outcome});
+    if(lastUsage)emit('billing.usage',{provider:'meta',usageStreamId,usageSemantics:'cumulative',model,usage:lastUsage});
+    emit('billing.agent.completed',{provider:'meta',usageStreamId,model,outcome});
   }
 }
 runMeta.provider='meta';
@@ -45,7 +65,7 @@ export async function* streamEvents(body) {
 
 const userInput=parts=>({role:'user',content:parts.map(text=>({type:'input_text',text}))});
 
-async function runMetaTurns({controller,signal,usageStreamId,invokeProvider=fn=>fn(),message,userMessage=message,effortMessage=userMessage,history=[],userHistory=null,propertyBbl,project={},memories=[],authorName=null,secrets={},dynamicTools=[],execute,emit=()=>{},onControl=()=>{},onUsage=()=>{},onOutcome=()=>{},instructions=null,effort=null,deadlineMs=300000,includeSkill=true,label='research',validateAnswer=null,getSources=null,checkDeliverables=false,unlockReserve=()=>{},followUp=null,fetch=globalThis.fetch}) {
+async function runMetaTurns({controller,signal,usageStreamId,model,invokeProvider=fn=>fn(),message,userMessage=message,effortMessage=userMessage,history=[],userHistory=null,propertyBbl,project={},memories=[],authorName=null,secrets={},dynamicTools=[],execute,emit=()=>{},onControl=()=>{},onUsage=()=>{},onOutcome=()=>{},instructions=null,effort=null,deadlineMs=300000,includeSkill=true,label='research',validateAnswer=null,getSources=null,checkDeliverables=false,unlockReserve=()=>{},followUp=null,fetch=globalThis.fetch}) {
   signal.throwIfAborted();
   let closed=false,active=false,checking=false,announce=false,dispatched=false,threadId=null;
   const output=emit;emit=(event,data)=>{if(!closed&&!signal.aborted)output(event,data);};
@@ -54,7 +74,6 @@ async function runMetaTurns({controller,signal,usageStreamId,invokeProvider=fn=>
   const modelTools=context.enabled?[...dynamicTools,contextReadTool]:dynamicTools;
   const offered=new Set(modelTools.map(tool=>tool.name));
   const tools=modelTools.map(tool=>({type:'function',name:tool.name,description:tool.description,parameters:tool.inputSchema}));
-  const model=secrets.META_MODEL||META_MODEL;
   const retrieved=[],ran=new Set(),steers=[];
   const conversation=[];
   let decision={storeOptions:null,comparison:null};
@@ -68,28 +87,31 @@ async function runMetaTurns({controller,signal,usageStreamId,invokeProvider=fn=>
   async function respond(input,turnEffort,turnSignal) {
     conversation.push(...input);
     const body={model,instructions:instructions||baseInstructions(),input:conversation,...(tools.length?{tools}:{}),reasoning:{effort:turnEffort,summary:'concise'},stream:true,store:false,include:['reasoning.encrypted_content']};
-    const send=()=>fetch(`${API}/responses`,{method:'POST',signal:turnSignal,headers:{authorization:`Bearer ${secrets.MODEL_API_KEY}`,'content-type':'application/json',accept:'text/event-stream'},body:JSON.stringify(body)});
+    const send=async()=>{
+      try{return await fetch(`${API}/responses`,{method:'POST',signal:turnSignal,headers:{authorization:`Bearer ${secrets.MODEL_API_KEY}`,'content-type':'application/json',accept:'text/event-stream'},body:JSON.stringify(body)});}
+      catch(error){if(turnSignal.aborted)throw turnSignal.reason;throw new Error('The Meta Model API request could not be completed. Try again shortly.');}
+    };
     // The wallet authorizes one provider dispatch per agent call; it covers the call's first request.
     const res=await (dispatched?send():invokeProvider(send,{signal}));
     dispatched=true;
-    if(!res.ok)throw new Error(`The Meta Model API answered HTTP ${res.status}: ${(await res.text()).slice(0,300)}`);
+    if(!res.ok)throw providerError(res.status);
     const calls=[],messages=[],items=[];let response=null;
-    for await (const event of streamEvents(res.body)) {
-      if(event.type==='response.created'&&announce){announce=false;emit('turn.started',{threadId:threadId??event.response.id,turnId:event.response.id,label,effort:turnEffort,model,toolCount:tools.length});}
-      else if(event.type==='response.output_item.added'&&event.item.type==='message'&&!checking)emit('message.started',{id:event.item.id});
-      else if(event.type==='response.output_text.delta'&&!checking)emit('message.delta',{id:event.item_id,delta:event.delta});
-      else if(event.type==='response.output_item.done') {
-        const item=event.item;
-        items.push(item);
-        if(item.type==='function_call')calls.push(item);
-        if(item.type==='message')messages.push({id:item.id,text:item.content.filter(part=>part.type==='output_text').map(part=>part.text).join('')});
-        if(item.type==='reasoning'&&item.summary?.length)emit('agent.phaseSummary',{id:item.id,summary:item.summary.map(part=>part.text)});
+    try {
+      for await (const event of streamEvents(res.body)) {
+        if(event.type==='response.created'&&announce){announce=false;emit('turn.started',{threadId:threadId??event.response.id,turnId:event.response.id,label,effort:turnEffort,model,toolCount:tools.length});}
+        else if(event.type==='response.output_item.added'&&event.item.type==='message'&&!checking)emit('message.started',{id:event.item.id});
+        else if(event.type==='response.output_text.delta'&&!checking)emit('message.delta',{id:event.item_id,delta:event.delta});
+        else if(event.type==='response.output_item.done') {
+          const item=event.item;
+          items.push(item);
+          if(item.type==='function_call')calls.push(item);
+          if(item.type==='message')messages.push({id:item.id,text:item.content.filter(part=>part.type==='output_text').map(part=>part.text).join('')});
+          if(item.type==='reasoning'&&item.summary?.length)emit('agent.phaseSummary',{id:item.id,summary:item.summary.map(part=>part.text)});
+        }
+        else if(event.type==='response.completed')response=event.response;
+        else if(event.type==='response.failed'||event.type==='response.incomplete'||event.type==='error')throw streamError();
       }
-      else if(event.type==='response.completed')response=event.response;
-      else if(event.type==='response.failed')throw new Error(`The Meta response failed: ${event.response.error.message}`);
-      else if(event.type==='response.incomplete')throw new Error(`The Meta response stopped early: ${event.response.incomplete_details.reason}.`);
-      else if(event.type==='error')throw new Error(`The Meta response stream failed: ${event.message}`);
-    }
+    } catch(error) {if(turnSignal.aborted)throw turnSignal.reason;throw streamError();}
     if(!response)throw new Error('The Meta response stream ended before the response completed.');
     threadId??=response.id;
     for(const item of items) {

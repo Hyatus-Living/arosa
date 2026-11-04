@@ -46,16 +46,23 @@ const envelope = {
   summary: { baseHeightMinFeet: 40, baseHeightMaxFeet: 75, maxBuildingHeightFeet: 85, setbackDepthFeet: 10, maxLotCoveragePercent: 65, rearYardFeet: 30, streetAssumption: 'front: wide, rear: narrow (assumed narrow)', maxDwellingUnits: 29 },
 };
 
+const fixtureLot = [[0, 0], [15.24, 0], [15.24, 30.48], [0, 30.48]];
+const fixtureFootprint = [[2.286, 4.572], [12.954, 4.572], [12.954, 25.908], [2.286, 25.908]];
+const fixtureLevels = (count, heightFeet, areaSqft) => Array.from({length: count}, (_, i) => ({
+  label: `L${i + 1}`, levelId: `level-${i + 1}`, use: 'Residential', floorElevationFeet: i * heightFeet, heightFeet,
+  areaSqft, footprint: fixtureFootprint.map(point => [...point]),
+}));
+
 const concepts = [
   {
     id: 'c-base', name: 'Envelope baseline', summary: 'Maximum as-of-right massing.', units: 'ft', version: 1, createdAt: T0,
     metrics: { storeys: 8, lotAreaSqft: 5000, grossFloorAreaSqft: 19600, far: 3.92, heightFeet: 85, units: 24, maxFar: 4, maxHeightFeet: 85 },
-    levels: [], compliance: { compliant: true, violations: [] },
+    lot: fixtureLot, levels: fixtureLevels(8, 10.625, 2450), compliance: { compliant: true, violations: [] },
   },
   {
     id: 'c-uap', name: 'UAP bonus scheme', summary: 'Adds the affordable bonus floor area.', units: 'ft', version: 2, createdAt: T0 + 3600000,
     metrics: { storeys: 10, lotAreaSqft: 5000, grossFloorAreaSqft: 24800, far: 4.96, heightFeet: 105, units: 31, maxFar: 5.01, maxHeightFeet: 105 },
-    levels: [],
+    lot: fixtureLot, levels: fixtureLevels(10, 10.5, 2480),
     revision: { parentConceptId: 'c-base', parentName: 'Envelope baseline', version: 2, note: 'UAP bonus', deltas: { grossFloorAreaSqft: 5200, far: 1.04, heightFeet: 20, storeys: 2, units: 7 } },
     compliance: { compliant: false, violations: [{ level: 'L10', reason: 'Exceeds the 105 ft height limit by 2 ft' }] },
   },

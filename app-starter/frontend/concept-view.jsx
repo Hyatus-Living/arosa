@@ -39,16 +39,23 @@ function bounds(concept, exploded) {
 // Geometry in scene metres: the lot and one footprint per storey. Concepts saved before
 // footprints were stored are rebuilt from the walls of each level.
 function conceptGeometry(concept) {
-  const nodes = Object.values(concept.scene.nodes);
-  const lot = concept.lot || nodes.find(n => n.type === 'zone' && n.properties?.acres === 'lot')?.polygon || nodes.find(n => n.type === 'zone')?.polygon || [];
+  const nodes = Object.values(concept?.scene?.nodes || {});
+  const polygon = value => Array.isArray(value) && value.length >= 3 && value.every(point => Array.isArray(point) && point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1])) ? value : [];
+  const lot = [concept?.lot, nodes.find(n => n.type === 'zone' && n.properties?.acres === 'lot')?.polygon, nodes.find(n => n.type === 'zone')?.polygon].map(polygon).find(value => value.length) || [];
   const walls = new Map();
   for (const wall of nodes.filter(n => n.type === 'wall')) {
     if (!walls.has(wall.parentId)) walls.set(wall.parentId, []);
     walls.get(wall.parentId).push(wall.start);
   }
   const levelIds = nodes.filter(n => n.type === 'level').map(n => n.id);
-  const levels = concept.levels.map((level, i) => ({...level, footprint: level.footprint || walls.get(level.levelId || levelIds[i]) || []}));
+  const levels = (Array.isArray(concept?.levels) ? concept.levels : []).map((level, i) => ({...level, footprint: [level.footprint, walls.get(level.levelId || levelIds[i])].map(polygon).find(value => value.length) || []}));
   return {lot, levels};
+}
+
+function geometryMessage({lot, levels}) {
+  if (!lot.length) return 'This massing has no valid lot polygon, so Arosa cannot draw dimensions or a building model.';
+  if (!levels.some(level => level.footprint.length)) return 'This massing has no valid storey footprints, so Arosa cannot draw a building model.';
+  return null;
 }
 
 async function createConceptRenderer(props, onUnavailable) {
@@ -492,6 +499,7 @@ function ConceptScene({concept, places, tilesKey, threadId, modelingProjectId}) 
   const onPhotoStatus = React.useCallback(update => setPhotoStatus(s => ({...s, ...update})), []);
   const extent = bounds(concept, exploded);
   const geometry = useMemo(() => conceptGeometry(concept), [concept]);
+  const missingGeometry = geometryMessage(geometry);
   const lotExtent = useMemo(() => {
     const xs = geometry.lot.map(p => p[0]), zs = geometry.lot.map(p => p[1]);
     return xs.length ? {minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs)} : {minX: extent.minX, maxX: extent.maxX, minZ: extent.minZ, maxZ: extent.maxZ};
@@ -536,7 +544,7 @@ function ConceptScene({concept, places, tilesKey, threadId, modelingProjectId}) 
         }}>{copied ? 'Copied' : 'Copy link'}</button>}
       </div>
       <div className="concept-canvas">
-        {!gpu && view !== 'plan' ? <p className="concept-fallback">3D is not available in this browser. The plan view still works.</p>
+        {missingGeometry ? <p className="concept-fallback" role="status">{missingGeometry} The reported metrics remain available below.</p> : !gpu && view !== 'plan' ? <p className="concept-fallback">3D is not available in this browser. The plan view still works.</p>
           : gpu ? (
             <Canvas frameloop="demand" dpr={[1, 2]} camera={{position: [50, 50, 50], fov: 50, near: 0.05, far: Math.max(1000, extent.radius * 12)}} gl={createRenderer}>
               <ambientLight intensity={1.2} />
@@ -551,8 +559,8 @@ function ConceptScene({concept, places, tilesKey, threadId, modelingProjectId}) 
               </CameraBoundary>
             </Canvas>
           ) : null}
-        {view === 'plan' && <PlanView concept={concept} geometry={geometry} showContext={showContext} showExisting={showExisting} places={places} sun={showSun && context?.origin ? solarPosition(new Date((SUN_MOMENTS.find(m => m.id === sunMomentId) || SUN_MOMENTS[4]).utc), context.origin.latitude, context.origin.longitude) : null} />}
-        {view === 'plan' && showSun && context?.origin && (
+        {!missingGeometry && view === 'plan' && <PlanView concept={concept} geometry={geometry} showContext={showContext} showExisting={showExisting} places={places} sun={showSun && context?.origin ? solarPosition(new Date((SUN_MOMENTS.find(m => m.id === sunMomentId) || SUN_MOMENTS[4]).utc), context.origin.latitude, context.origin.longitude) : null} />}
+        {!missingGeometry && view === 'plan' && showSun && context?.origin && (
           <p className="concept-attribution">Schematic sun study ({(SUN_MOMENTS.find(m => m.id === sunMomentId) || {}).label || ''}): shadows swept from modeled and recorded building heights. Not a shadow-impact analysis.</p>
         )}
         {showPhoto && view !== 'plan' && (
@@ -597,7 +605,7 @@ function ConceptScene({concept, places, tilesKey, threadId, modelingProjectId}) 
       <table className="concept-levels">
         <thead><tr><th>Storey</th><th>Use</th><th>Floor at</th><th>Height</th><th>Area</th>{m.units != null && <th>Units</th>}</tr></thead>
         <tbody>
-          {[...concept.levels].reverse().map((level, i) => (
+          {[...geometry.levels].reverse().map((level, i) => (
             <tr key={i}><td>{level.label}</td><td>{level.use || '—'}</td><td>{level.floorElevationFeet} ft</td><td>{level.heightFeet} ft</td><td>{level.areaSqft.toLocaleString()} sq ft</td>{m.units != null && <td>{level.units ?? '—'}</td>}</tr>
           ))}
         </tbody>

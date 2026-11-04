@@ -12,7 +12,8 @@
 // Sending an option makes a link like the research service's; /api/public/options/:token renders the page it opens,
 // with the sample floor plan and, when RENDERS names a directory holding street.png and aerial.png, those
 // as the rendering stills.
-// Test hooks: POST /__agent-revision/:id saves a revision as Arosa, POST /__teammate-revision/:id saves
+// Test hooks: POST /__agent-revision/:id saves a revision as Arosa, POST /__rendered-plan/:id seeds the
+// matching sample plan and walkthrough artifacts, POST /__teammate-revision/:id saves
 // one as another user, POST /__agent-drawing/:id attaches the sample SVG as Arosa, POST
 // /__drop-streams/:id ends the open event streams so browsers reconnect, GET /__notes lists the
 // messages sent to the conversation and GET /__stream-connects the cursor of every stream connect.
@@ -46,7 +47,7 @@ let seq = 0;
 // saves them in the research service, so the saved site's card and its page show the same figures.
 function project(id) {
   if (!projects.has(id)) {
-    projects.set(id, {plan: null, revision: null, revisions: [], drawings: [], state: {...stateWithArchitecture, id}});
+    projects.set(id, {plan: null, revision: null, revisions: [], drawings: [], artifacts: [], jobs: [], state: {...stateWithArchitecture, id}});
     saveSchemes(id);
   }
   return projects.get(id);
@@ -58,16 +59,29 @@ function emit(id, event, data) {
 }
 function summary(id) {
   const p = project(id);
-  return {projectId: id, current: p.plan ? {planId: 'plan_fixture', revision: p.revision, parentRevision: p.plan.parentRevision, createdAt: Date.now(), plan: p.plan, artifacts: [], jobs: []} : null, revisions: p.revisions};
+  return {projectId: id, current: p.plan ? {planId: 'plan_fixture', revision: p.revision, parentRevision: p.plan.parentRevision, createdAt: Date.now(), plan: p.plan, artifacts: p.artifacts, jobs: p.jobs} : null, revisions: p.revisions};
 }
 function save(id, plan, by) {
   const p = project(id);
   const revision = (p.revision ?? 0) + 1;
   p.plan = {...plan, id: 'plan_fixture', revision, parentRevision: p.revision};
+  p.artifacts = [];
+  p.jobs = [];
   p.revisions.unshift({revision, parentRevision: p.revision, createdAt: Date.now()});
   p.revision = revision;
   emit(id, 'architecture.revision', {revision, parentRevision: p.plan.parentRevision, by});
   return p.plan;
+}
+const samplePlan = () => ({schema: 'acres.architecture.plan/1', objects: [], sources: [], ...JSON.parse(fixtures('architecture/sample-plan.json'))});
+const fixtureArtifact = (id, kind, revision, jobId, contentType) => {
+  const name = kind === 'manifest' ? 'sample-manifest.json' : 'sample.glb';
+  return {id, kind, revision, jobId, sha256: kind.padEnd(64, '0').slice(0, 64), bytes: fixtures(`architecture/${name}`).length, contentType, createdAt: Date.now()};
+};
+function attachFixtureWalkthrough(id, plan) {
+  const jobId = `fixture-render-${plan.revision}`;
+  const glb = fixtureArtifact(`${jobId}-glb`, 'glb', plan.revision, jobId, 'model/gltf-binary');
+  const manifest = fixtureArtifact(`${jobId}-manifest`, 'manifest', plan.revision, jobId, 'application/json');
+  project(id).jobs = [{id: jobId, projectId: id, revision: plan.revision, status: 'succeeded', reason: null, createdAt: Date.now(), startedAt: Date.now(), finishedAt: Date.now(), artifacts: [glb, manifest]}];
 }
 function attach(id, {name, contentType, body, by}) {
   const kind = {'application/x-step': 'ifc', 'image/svg+xml': 'svg', 'application/pdf': 'pdf', 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/webp': 'webp'}[contentType];
@@ -412,6 +426,14 @@ app.get('/api/public/options/:token', (req, res) => {
 });
 app.get('/api/public/options/:token/files/:fileId', (req, res) => (options.has(req.params.token) && FILES[req.params.fileId] ? res.type(req.params.fileId.endsWith('a') ? 'image/svg+xml' : 'image/png').send(FILES[req.params.fileId]()) : res.status(404).end()));
 app.get('/api/projects/:id/architecture', (req, res) => res.json(summary(req.params.id)));
+app.get('/api/projects/:id/architecture/artifacts/:artifactId', (req, res) => {
+  const p = project(req.params.id);
+  const artifact = p.jobs.flatMap(job => job.artifacts).find(item => item.id === req.params.artifactId);
+  if (!artifact) return res.status(404).json({error: 'Artifact not found.'});
+  if (artifact.kind === 'glb') return res.type('model/gltf-binary').send(fixtures('architecture/sample.glb'));
+  if (artifact.kind === 'manifest') return res.type('application/json').send(fixtures('architecture/sample-manifest.json'));
+  return res.status(404).json({error: 'Artifact not found.'});
+});
 app.get('/api/projects/:id/architecture/schemes/draft', (_req, res) => res.json({drafts: []}));
 app.put('/api/projects/:id/architecture/plan', (req, res) => {
   const p = project(req.params.id);
@@ -438,11 +460,19 @@ app.get('/api/projects/:id/events', (req, res) => {
 });
 app.use('/api', (_req, res) => res.status(404).json({error: 'Not found.'}));
 
-// Arosa saves the sample plan (or renames the current one) as a new revision.
+// Arosa saves the sample plan (or renames the current one) as a revision. Rendering stays separate.
 app.post('/__agent-revision/:id', (req, res) => {
   const p = project(req.params.id);
   const base = p.plan || exportPlan(planFromFixture(JSON.parse(fixtures('sample-floorplan.json')), {ref: 'Listing floor plan.svg'}));
-  res.json(save(req.params.id, {...base, name: `${base.name.replace(/ \(Arosa\)$/, '')} (Arosa)`}, 'agent'));
+  const plan = save(req.params.id, {...base, name: `${base.name.replace(/ \(Arosa\)$/, '')} (Arosa)`}, 'agent');
+  res.json(plan);
+});
+// The explicit rendered-demo hook uses only the matching plan, GLB, and manifest fixture.
+app.post('/__rendered-plan/:id', (req, res) => {
+  const base = samplePlan();
+  const plan = save(req.params.id, {...base, name: `${base.name.replace(/ \(Arosa\)$/, '')} (Arosa)`}, 'agent');
+  attachFixtureWalkthrough(req.params.id, plan);
+  res.json(plan);
 });
 app.post('/__agent-drawing/:id', (req, res) => res.json(attach(req.params.id, {name: 'Listing floor plan.svg', contentType: 'image/svg+xml', body: fixtures('sample-floorplan.svg'), by: 'agent'})));
 app.post('/__teammate-revision/:id', (req, res) => {

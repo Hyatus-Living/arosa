@@ -78,7 +78,7 @@ test('a model is created only from a picked NYC address, carrying its BBL', asyn
   assert.equal(created.bbl, '1019080056');
   requests[1].answer({id: 'new-model'});
   await flush();
-  assert.deepEqual(navigated, ['/modeling/new-model']);
+  assert.deepEqual(navigated, ['/modeling/new-model?view=massing']);
 });
 
 test('an address with no NYC match can only proceed through the labeled no-parcel path', async t => {

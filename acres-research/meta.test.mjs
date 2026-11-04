@@ -64,9 +64,31 @@ test('a tool call round trip replays its call and result without stored response
   assert.deepEqual(events.find(([e])=>e==='message.completed')[1],{id:'r2-m',phase:'final_answer',text:'R6B allows 2.2 FAR.'});
   assert.deepEqual(events.find(([e])=>e==='agent.phaseSummary')[1].summary,['**Reading the lot**']);
   const billed=events.filter(([e])=>e==='billing.usage').map(([,d])=>d);
-  assert.ok(billed.every(d=>d.provider==='meta'&&d.usageSemantics==='cumulative'));
+  assert.ok(billed.every(d=>d.provider==='meta'&&d.usageSemantics==='cumulative'&&d.model===META_MODEL));
   assert.deepEqual(billed.at(-1).usage,{inputTokens:300,cachedInputTokens:20,outputTokens:60,reasoningOutputTokens:10});
   assert.deepEqual(events.filter(([e])=>e.startsWith('billing.agent')).map(([e,d])=>[e,d.outcome]),[['billing.agent.started',undefined],['billing.agent.completed','completed']]);
+  assert.ok(events.filter(([e])=>e.startsWith('billing.agent')).every(([,d])=>d.model===META_MODEL));
+});
+
+test('Muse Wonder uses its Model API name',async()=>{
+  const {fetch,requests}=scripted(answering('r1','Done.'));
+  await runMeta({message:'q',secrets:{...secrets,META_MODEL:'muse-wonder-1.0'},includeSkill:false,fetch,execute:async()=>({})});
+  assert.equal(requests[0].body.model,'muse-wonder-1.0');
+});
+
+test('Meta contributor API models remain supported',()=>{
+  assert.equal(typeof researchEngine({RESEARCH_ENGINE:'meta',MODEL_API_KEY:'fixture',META_MODEL:'muse-spark-1.2-contributor'}),'function');
+  assert.equal(typeof researchEngine({RESEARCH_ENGINE:'meta',MODEL_API_KEY:'fixture',META_MODEL:'muse-spark-1.3-contributor'}),'function');
+});
+
+test('unsupported Meta models fail before dispatch or usage',async()=>{
+  let dispatched=0;
+  const events=[];
+  await assert.rejects(runMeta({message:'q',secrets:{...secrets,META_MODEL:'muse-wonder-full'},includeSkill:false,
+    fetch:async()=>{dispatched++;throw new Error('must not dispatch');},execute:async()=>({}),emit:(event,data)=>events.push([event,data])}),/Wonder Full.*not through the Meta Model API/);
+  assert.equal(dispatched,0);
+  assert.deepEqual(events,[]);
+  assert.throws(()=>researchEngine({RESEARCH_ENGINE:'meta',MODEL_API_KEY:'fixture',META_MODEL:'unlisted-model'}),/not supported/);
 });
 
 test('encrypted reasoning is replayed with the tool call and never replaced with a bare id',async()=>{
@@ -140,14 +162,63 @@ test('a citation failure gets one repair turn in the same conversation',async()=
   assert.ok(events.some(([e])=>e==='turn.repair'));
 });
 
-test('an API error fails the run with the status and no fallback',async()=>{
-  const {fetch}=scripted(new Response('{"error":{"message":"invalid model"}}',{status:400}));
-  await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch,execute:async()=>({})}),/HTTP 400: .*invalid model/);
+test('an API error is actionable and does not expose a provider body',async()=>{
+  const raw='invalid model Bearer super-secret-value';
+  const {fetch}=scripted(new Response(JSON.stringify({error:{message:raw}}),{status:400}));
+  await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch,execute:async()=>({})}),error=>{
+    assert.match(error.message,/rejected this request/);
+    assert.ok(!error.message.includes(raw));
+    assert.ok(!error.message.includes('super-secret-value'));
+    return true;
+  });
+});
+
+test('Meta HTTP failures identify the recovery path without provider details',async()=>{
+  for(const [status,message] of [[401,/authenticate/],[404,/configured model/],[429,/rate limit/],[503,/temporarily unavailable/]]) {
+    const raw=`provider detail Bearer secret-${status}`;
+    const {fetch}=scripted(new Response(raw,{status}));
+    await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch,execute:async()=>({})}),error=>{
+      assert.match(error.message,message);
+      assert.ok(!error.message.includes(raw));
+      return true;
+    });
+  }
+});
+
+test('wallet errors and abort reasons are preserved while fetch failures are sanitized',async()=>{
+  const walletError=Object.assign(new Error('wallet reconciliation required'),{name:'WalletAuthorizationError',code:'wallet_pending'});
+  await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch:async()=>{throw new Error('must not fetch');},execute:async()=>({}),invokeProvider:()=>{throw walletError;}}),error=>error===walletError);
+  const controller=new AbortController();
+  const abortReason=Object.assign(new Error('Stopped by the user.'),{name:'AbortError',retryable:false});
+  const aborted=runMeta({message:'q',secrets,includeSkill:false,signal:controller.signal,fetch:async(_url,{signal})=>new Promise((resolve,reject)=>{
+    signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+    queueMicrotask(()=>controller.abort(abortReason));
+  }),execute:async()=>({})});
+  await assert.rejects(aborted,error=>error===abortReason);
+  await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch:async()=>{throw new Error('network token secret-value');},execute:async()=>({})}),error=>{
+    assert.match(error.message,/could not be completed/);
+    assert.ok(!error.message.includes('secret-value'));
+    return true;
+  });
+});
+
+test('malformed and broken Meta streams do not expose provider details',async()=>{
+  const raw='stream token secret-value';
+  const malformed=new Response(`data: {"type":"response.completed","${raw}":\n\n`,{status:200,headers:{'content-type':'text/event-stream'}});
+  const broken=new Response(new ReadableStream({start(controller){controller.error(new Error(raw));}}),{status:200,headers:{'content-type':'text/event-stream'}});
+  for(const response of [malformed,broken]) {
+    const {fetch}=scripted(response);
+    await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch,execute:async()=>({})}),error=>{
+      assert.match(error.message,/stream failed/);
+      assert.ok(!error.message.includes(raw));
+      return true;
+    });
+  }
 });
 
 test('a failed response stream fails the run',async()=>{
   const {fetch}=scripted(sse([{type:'response.created',response:{id:'r1'}},{type:'response.failed',response:{id:'r1',error:{message:'overloaded'}}}]));
-  await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch,execute:async()=>({})}),/failed: overloaded/);
+  await assert.rejects(runMeta({message:'q',secrets,includeSkill:false,fetch,execute:async()=>({})}),/stream failed/);
 });
 
 test('the skill and the question go in the first request',async()=>{
